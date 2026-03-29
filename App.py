@@ -97,21 +97,33 @@ def load_bond_data():
     tickers = ['DGS3MO', 'DGS2', 'DGS5', 'DGS10', 'DGS30']
     df = pd.DataFrame()
     
-    # The "Fake ID": Tells FRED we are a normal web browser, not a cloud bot
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
     
-    for ticker in tickers:
+    # Helper function for the threads to run
+    def fetch_fred_data(ticker):
         url = f'https://fred.stlouisfed.org/graph/fredgraph.csv?id={ticker}'
         temp_df = pd.read_csv(url, index_col='DATE', parse_dates=True, na_values='.', storage_options=headers)
-        df[ticker] = temp_df[ticker]
+        return ticker, temp_df[ticker]
+
+    # Spin up 5 simultaneous threads to fetch the data all at once
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        results = executor.map(fetch_fred_data, tickers)
         
+    # Stitch the results back together
+    for ticker, series in results:
+        df[ticker] = series
+        
+    # Filter for 1994 onwards
     df = df[df.index >= '1994-01-01']
+    
     df.columns = ['3-Month', '2-Year', '5-Year', '10-Year', '30-Year']
     df.dropna(inplace=True)
     
+    # Calculate Spreads
     df['10Y_3M_Spread'] = df['10-Year'] - df['3-Month']
     df['10Y_2Y_Spread'] = df['10-Year'] - df['2-Year']
     df['30Y_5Y_Spread'] = df['30-Year'] - df['5-Year']
+    
     return df
 
 # Initialize Data (Using a sorted tuple to prevent Streamlit cache crashes)

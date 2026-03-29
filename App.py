@@ -6,23 +6,24 @@ import plotly.graph_objects as go
 import numpy as np
 import feedparser
 import time
+from datetime import datetime, timedelta
 
-# --- 1. PAGE CONFIG & ASSET BUCKETS ---
-st.set_page_config(page_title="Macro Snapshot v31.0", layout="wide")
+# --- 1. PAGE CONFIG & STATE ---
+st.set_page_config(page_title="Macro Snapshot v32.3", layout="wide")
 
+# Cloud-Safe Session State Init
+if "pg" not in st.session_state: 
+    st.session_state.pg = 0
+
+# --- 2. ASSET BUCKETS ---
 categories = {
-    "A: Indicators": {'TIP': '🟦 TIP', 'TLT': '🟦 TLT', 'DX-Y.NYB': '🟦 DXY', '^TNX': '🟦 10Y', '^VIX': '💀 VIX'},
     "B: Digital Assets": {'IBIT': '₿ IBIT', 'MSTR': '₿ MSTR'},
     "C: Tech": {'MSFT': '💻 MSFT', 'AAPL': '💻 AAPL', 'GOOGL': '💻 GOOGL'},
     "D: Semis": {'NVDA': '📟 NVDA', 'AMD': '📟 AMD', 'AVGO': '📟 AVGO'},
+    "A: Indicators": {'TIP': '🟦 TIP', 'TLT': '🟦 TLT', 'DX-Y.NYB': '🟦 DXY', '^TNX': '🟦 10Y', '^VIX': '💀 VIX'},
     "E: Energy/Inf": {'XLE': '🔥 XLE', 'XOM': '🔥 XOM', 'DBC': '🔥 DBC'},
     "F: Financials": {'KBE': '🏦 KBE', 'JPM': '🏦 JPM', 'BRK-B': '🏦 BRK'},
     "G: Defensive": {'SCHD': '🛡️ SCHD', 'WMT': '🛡️ WMT', 'PG': '🛡️ PG'},
-}
-
-category_emojis = {
-    "Indicators": "📉", "Digital Assets": "₿", "Tech": "💻", 
-    "Semis": "📟", "Energy/Inf": "🔥", "Financials": "🏦", "Defensive": "🛡️"
 }
 
 color_map = {
@@ -33,7 +34,7 @@ color_map = {
     '🛡️ SCHD': '#008000', '🛡️ WMT': '#32CD32', '🛡️ PG': '#228B22',
 }
 
-# --- 2. SIDEBAR: RESTORED DETAILED LEGEND ---
+# --- 3. SIDEBAR (Restored Full Legend) ---
 st.sidebar.header("📐 Correlation Decoder")
 with st.sidebar.expander("Detailed Quartile Interpretation", expanded=True):
     st.markdown("""
@@ -56,13 +57,17 @@ st.sidebar.divider()
 st.sidebar.header("🕒 Dashboard Controls")
 day_offset = st.sidebar.slider("Snapshot Day", 0, 252, 0)
 comp_lookback = st.sidebar.slider("Comparison Start", 2, 252, 60)
-window_size = st.sidebar.slider("Correlation Sensitivity", 5, 60, 15)
+window_size = st.sidebar.slider("Correlation Sensitivity", 5, 60, 21)
 
-rename_map = {t: l for cat in categories.values() for t, l in cat.items()}
-rename_map['GLD'] = '🟡 GLD'
-selected_labels = st.sidebar.multiselect("Select Assets:", options=list(rename_map.values()), default=list(rename_map.values()))
+st.sidebar.header("🗞️ Terminal Feed")
+active_feeds = {
+    "CNBC Alerts": st.sidebar.checkbox("CNBC Breaking", True),
+    "MarketWatch": st.sidebar.checkbox("MarketPulse", True),
+    "Yahoo": st.sidebar.checkbox("Yahoo Finance", True),
+    "FT": st.sidebar.checkbox("Financial Times", True)
+}
 
-# --- 3. DATA LOADING (Cloud-Hardened) ---
+# --- 4. DATA LOADING (Cloud-Hardened) ---
 @st.cache_data(ttl=3600)
 def load_market_data(ticker_list):
     for attempt in range(3):
@@ -77,20 +82,14 @@ def load_market_data(ticker_list):
 
 all_tickers = list(set([t for c in categories.values() for t in c.keys()] + ['GLD']))
 raw_data = load_market_data(all_tickers)
+rename_map = {t: l for cat in categories.values() for t, l in cat.items()}
+rename_map['GLD'] = '🟡 GLD'
 
 if raw_data.empty:
-    st.error("📡 Connection to Yahoo Finance failed. Please refresh.")
+    st.error("📡 Yahoo Finance API rate limit hit or unavailable. Please try again in a few minutes.")
     st.stop()
 
-# --- 4. DATA PROCESSING ---
-target_idx = (len(raw_data) - 1) - day_offset
-snapshot_date = raw_data.index[target_idx]
-full_window = raw_data.iloc[:target_idx + 1]
-perf_window = full_window.iloc[max(0, len(full_window)-comp_lookback):].rename(columns=rename_map)
-corr_window = full_window.iloc[-window_size:].rename(columns=rename_map)
-corr_matrix = corr_window.corr()
-
-# --- UTILITY ---
+# --- 5. UTILITIES ---
 def get_perf_and_trend(series, days):
     try:
         start_val = series.iloc[-days]; end_val = series.iloc[-1]
@@ -98,44 +97,55 @@ def get_perf_and_trend(series, days):
         return f"{pct:.2f}%", "🟢" if pct > 0 else "🔴"
     except: return "0.00%", "⚪"
 
-# --- 5. TABS ---
-tab1, tab2 = st.tabs(["📊 Market Analysis", "📰 Live Economics & News"])
+def draw_gauge(title, val, col, key):
+    color = f"rgb(255, {int(255*(1-val))}, {int(255*(1-val))})" if val > 0 else f"rgb({int(255*(1+val))}, {int(255*(1+val))}, 255)"
+    fig = go.Figure(go.Indicator(mode="gauge+number", value=val, title={'text': title, 'font': {'size': 14}}, number={'font': {'size': 24}},
+        gauge={'axis': {'range': [-1, 1], 'tickvals': [-1, -0.5, 0, 0.5, 1]}, 'bar': {'color': color}, 'bgcolor': "#262626", 'borderwidth': 1}))
+    fig.update_layout(height=170, margin=dict(l=10, r=10, t=50, b=20), paper_bgcolor="#0E1117", font={'color': "white"})
+    col.plotly_chart(fig, use_container_width=True, key=key)
+
+# --- 6. PROCESSING ---
+target_idx = (len(raw_data) - 1) - day_offset
+snapshot_date = raw_data.index[target_idx]
+full_window = raw_data.iloc[:target_idx + 1]
+corr_window = full_window.iloc[-window_size:].rename(columns=rename_map)
+ordered_labels = [rename_map[t] for cat in categories.values() for t in cat.keys()] + ['🟡 GLD']
+corr_matrix = corr_window[ordered_labels].corr()
+
+# --- 7. TABS ---
+tab1, tab2 = st.tabs(["📊 Market Analysis", "📰 Terminal Feed"])
 
 with tab1:
-    # 1. Charts (Restored Hover & Color Families)
+    # 1. Charts with Grouped Toggles
     st.subheader(f"1. Performance Snapshot: {snapshot_date.strftime('%Y-%m-%d')}")
-    norm_data = (perf_window[selected_labels] / perf_window[selected_labels].iloc[0]) * 100
-    fig_line = px.line(norm_data, log_y=True, template="plotly_dark", color_discrete_map=color_map)
-    fig_line.update_layout(height=500, hovermode='closest')
-    st.plotly_chart(fig_line, use_container_width=True, theme=None)
+    
+    with st.expander("⚙️ Filter Chart Assets by Category", expanded=False):
+        selected_chart_labels = []
+        cols = st.columns(len(categories))
+        for i, (cat, assets) in enumerate(categories.items()):
+            with cols[i]:
+                st.markdown(f"**{cat.split(': ')[1]}**")
+                for t, l in assets.items():
+                    if st.checkbox(l, value=True, key=f"toggle_{t}"):
+                        selected_chart_labels.append(l)
 
-    st.subheader("2. Market DNA Heatmap")
-    fig_corr = px.imshow(corr_matrix.mask(np.triu(np.ones_like(corr_matrix, dtype=bool))), 
-                         text_auto=".2f", aspect="auto", color_continuous_scale='RdBu_r', range_color=[-1, 1], template="plotly_dark")
-    st.plotly_chart(fig_corr, use_container_width=True, theme=None)
+    if not selected_chart_labels:
+        st.warning("Please select at least one asset to display the chart.")
+    else:
+        perf_window = full_window.iloc[max(0, len(full_window)-comp_lookback):].rename(columns=rename_map)
+        norm_data = (perf_window[selected_chart_labels] / perf_window[selected_chart_labels].iloc[0]) * 100
+        fig_line = px.line(norm_data, log_y=True, template="plotly_dark", color_discrete_map=color_map)
+        fig_line.update_layout(hovermode='closest')
+        st.plotly_chart(fig_line, use_container_width=True)
 
+    # 2. Heatmap
+    st.subheader("2. Market DNA Heatmap (Indicators Centered)")
+    fig_corr = px.imshow(corr_matrix.mask(np.triu(np.ones_like(corr_matrix, dtype=bool))), text_auto=".2f", aspect="auto", color_continuous_scale='RdBu_r', range_color=[-1, 1], template="plotly_dark")
+    st.plotly_chart(fig_corr, use_container_width=True)
+
+    # 3. Command Center
     st.divider()
     st.subheader("3. Macro Command Center: Distilled Dials")
-
-    def get_corr_color(val):
-        if val > 0: return f"rgb(255, {int(255*(1-val))}, {int(255*(1-val))})"
-        return f"rgb({int(255*(1+val))}, {int(255*(1+val))}, 255)"
-
-    def draw_gauge(title, val, col, key):
-        quartile_ticks = [-1, -0.75, -0.5, -0.25, 0, 0.25, 0.5, 0.75, 1]
-        fig = go.Figure(go.Indicator(
-            mode="gauge+number", value=val,
-            title={'text': title, 'font': {'size': 14, 'color': 'white'}},
-            number={'font': {'size': 24, 'color': 'white'}},
-            gauge={
-                'axis': {'range': [-1, 1], 'tickvals': quartile_ticks, 'tickfont': {'size': 9}, 'tickcolor': 'white'},
-                'bar': {'color': get_corr_color(val)},
-                'bgcolor': "#262626", 'borderwidth': 1, 'bordercolor': "white"
-            }))
-        fig.update_layout(height=200, margin=dict(l=10, r=10, t=50, b=20), paper_bgcolor="#0E1117", font={'color': "white"})
-        col.plotly_chart(fig, use_container_width=True, key=key, theme=None)
-
-    # RESTORED: Gauge Segments and Row Titles
     anchors = [
         ('TLT', "📉 TLT (Bonds)"), ('^TNX', "🏛️ 10Y Yield"), ('DX-Y.NYB', "💵 DXY (Dollar)"), 
         ('MSTR', "₿ Crypto (MSTR)"), ('MSFT', "💻 Tech (MSFT)"), ('NVDA', "📟 Semis (NVDA)"), 
@@ -145,18 +155,18 @@ with tab1:
     for ticker, row_title in anchors:
         st.markdown(f"### {row_title} vs Sector Averages")
         t_col, g_col = st.columns([2, 8])
-        
-        # Perf Table
         anchor_s = full_window[ticker]
-        p_df = pd.DataFrame({
+        
+        p_data = {
             "Period": ["1D", "1M", "3M", "6M"],
-            "Perf %": [get_perf_and_trend(anchor_s, d)[0] for d in [2,21,63,126]],
-            "Trend": [get_perf_and_trend(anchor_s, d)[1] for d in [2,21,63,126]]
-        })
-        t_col.table(p_df)
+            "Perf %": [get_perf_and_trend(anchor_s, d)[0] for d in [2, 21, 63, 126]],
+            "Trend": [get_perf_and_trend(anchor_s, d)[1] for d in [2, 21, 63, 126]]
+        }
+        
+        # CHANGED: Swapped st.table for st.dataframe with hide_index=True
+        t_col.dataframe(pd.DataFrame(p_data), hide_index=True)
 
-        # Distilled Dials Logic
-        active_cats = [c for c in categories.keys() if c != "A: Indicators" and ticker not in categories[c]]
+        active_cats = [c for c in categories.keys() if ticker not in categories[c]]
         gauge_cols = g_col.columns(len(active_cats) + 1)
         anchor_lbl = rename_map[ticker]
         section_audit = []
@@ -166,22 +176,35 @@ with tab1:
             indiv_vals = [corr_matrix.loc[anchor_lbl, lbl] for lbl in cat_ticks]
             avg_val = np.mean(indiv_vals)
             short_name = cat_name.split(': ')[1]
-            emoji = category_emojis.get(short_name, "")
-            draw_gauge(f"{emoji} {short_name}", avg_val, gauge_cols[i], f"g_{ticker}_{cat_name}_{day_offset}")
-            section_audit.append({"Sector": short_name, "Heatmap Values": ", ".join([f"{v:.2f}" for v in indiv_vals]), "Distilled Avg": f"{avg_val:.2f}"})
+            draw_gauge(short_name, avg_val, gauge_cols[i], f"g_{ticker}_{cat_name}_{day_offset}")
+            section_audit.append({"Sector": short_name, "Values": ", ".join([f"{v:.2f}" for v in indiv_vals]), "Avg": f"{avg_val:.2f}"})
 
-        # Standalone Gold
-        gold_corr = corr_matrix.loc[anchor_lbl, '🟡 GLD']
-        draw_gauge("🟡 Gold", gold_corr, gauge_cols[-1], f"gold_{ticker}_{day_offset}")
+        draw_gauge("🟡 Gold", corr_matrix.loc[anchor_lbl, '🟡 GLD'], gauge_cols[-1], f"gold_{ticker}_{day_offset}")
+        with st.expander(f"🧮 {row_title} Math Audit"): st.dataframe(pd.DataFrame(section_audit), hide_index=True)
 
-        with st.expander(f"🧮 {row_title} Math Audit"):
-            st.dataframe(pd.DataFrame(section_audit), hide_index=True)
-
+    # 4. REGIME & EXPANDED NARRATIVES
     st.divider()
-    # RESTORED: Analysis Summary Thesis
+    y_chg = full_window['^TNX'].diff(5).iloc[-1]
+    d_chg = full_window['DX-Y.NYB'].diff(5).iloc[-1]
+    regime = "STAGFLATION (Risk-Off)" if y_chg > 0 and d_chg > 0 else "REFLATION (Sector Rotation)" if y_chg > 0 else "DEFLATION (Risk-Off)" if d_chg > 0 else "GOLDILOCKS (Risk-On)"
+    
+    c_reg, c_nar = st.columns([1, 2])
+    c_reg.metric("Detected Regime", regime, delta=f"Y:{y_chg:.2f} | D:{d_chg:.2f}", delta_color="inverse")
+    
+    with c_nar:
+        st.subheader("📜 Macro States & Dependencies")
+        st.markdown(r"""
+        * **Goldilocks (Risk-On):** Yields $\downarrow$ + Dollar $\downarrow \rightarrow$ Broad Expansion. Capital flows into Tech, Crypto, and high-beta risk assets.
+        * **Stagflation (Risk-Off / Squeeze):** Yields $\uparrow$ + Dollar $\uparrow \rightarrow$ Liquidity Squeeze. Valuations compress across the board; cash is king.
+        * **Reflation (Sector Rotation):** Yields $\uparrow$ + Dollar $\downarrow \rightarrow$ Growth under pressure. Capital rotates into Value, Energy, and Financials.
+        * **Deflation (Risk-Off / Flight to Safety):** Yields $\downarrow$ + Dollar $\uparrow \rightarrow$ Growth shock. Capital hides in Treasury Bonds, Gold, and Defensive stalwarts.
+        """)
+
+    # 5. RESTORED FOOTER (Analysis & Recipe)
+    st.divider()
     st.subheader("📝 Analysis Summary & Thesis")
-    st.markdown(f"""
-    <div style="font-size:24px; line-height:1.6;">
+    st.markdown(r"""
+    <div style="font-size:18px; line-height:1.6;">
     <ul>
         <li><b>The Liquidity Squeeze (TLT vs Tech):</b> High negative correlations indicate a valuation/discount-rate squeeze. If they move together, it is a broad liquidity event.</li>
         <li><b>The Reflation Trade (Energy vs Banks):</b> Look for high positive synergy; Energy driving yields typically bolsters Bank margins.</li>
@@ -192,9 +215,8 @@ with tab1:
     """, unsafe_allow_html=True)
 
     st.divider()
-    # RESTORED: Footnote Recipes & Example
     st.subheader("🏁 Footnote: Gauge Ingredients & Manual")
-    st.markdown("""
+    st.markdown(r"""
     ### 🛠️ Sector Ingredients (The Recipe)
     Each gauge averages the **individual correlation coefficients** from the Heatmap for the following assets:
     * **📉 Indicators:** TIP, TLT, DXY, 10Y Yield, VIX
@@ -212,23 +234,38 @@ with tab1:
     """)
 
 with tab2:
-    st.header("🗞️ Intelligence Feed")
-    keyword = st.text_input("Highlight Keywords:", "Fed")
-    feed_sources = {
-        "Bloomberg Wealth": "https://feeds.bloomberg.com/wealth/news.rss",
-        "Bloomberg Tech": "https://feeds.bloomberg.com/technology/news.rss",
-        "CNBC Finance": "https://www.cnbc.com/id/10000664/device/rss/rss.html",
-        "WSJ Markets": "https://feeds.a.dj.com/rss/RSSMarketsMain.xml"
-    }
-    news_items = []
-    for source, url in feed_sources.items():
-        feed = feedparser.parse(url)
-        for entry in feed.entries:
-            news_items.append({"Source": source, "Date": getattr(entry, 'published', "Recent"), "Headline": entry.title, "Link": entry.link})
-    for row in news_items[:30]:
-        display_text = f"**[{row['Headline']}]({row['Link']})**"
-        if keyword.lower() in row['Headline'].lower():
-            st.error(f"🚨 {row['Source']} | {row['Date']} | {display_text}")
-        else:
-            st.write(f"`{row['Source']}` | {row['Date']} | {display_text}")
-        st.divider()
+    st.header("🗞️ Macro Terminal Feed")
+    urls = {"CNBC Alerts": "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=401&id=10000664",
+            "MarketWatch": "http://feeds.marketwatch.com/marketwatch/marketpulse/",
+            "Yahoo": "https://finance.yahoo.com/news/rssindex", "FT": "https://www.ft.com/?format=rss"}
+    
+    all_news = []
+    limit = datetime.now() - timedelta(days=14)
+    for name, url in urls.items():
+        if active_feeds[name]:
+            feed = feedparser.parse(url)
+            for entry in feed.entries:
+                try:
+                    parsed_time = getattr(entry, 'published_parsed', getattr(entry, 'updated_parsed', None))
+                    if parsed_time:
+                        dt = datetime.fromtimestamp(time.mktime(parsed_time))
+                        if dt > limit: 
+                            all_news.append({"Date": dt, "Source": name, "Title": entry.title, "Link": entry.link})
+                except Exception: 
+                    continue
+    
+    all_news = sorted(all_news, key=lambda x: x['Date'], reverse=True)
+    
+    start = st.session_state.pg * 50
+    for item in all_news[start : start + 50]:
+        st.write(f"**{item['Date'].strftime('%m/%d %H:%M')}** | `{item['Source']}` : [{item['Title']}]({item['Link']})")
+    
+    c1, c2 = st.columns(2)
+    if st.session_state.pg > 0:
+        if c1.button("⬅️ Previous"): 
+            st.session_state.pg -= 1
+            st.rerun()
+    if len(all_news) > start + 50:
+        if c2.button("Next ➡️"): 
+            st.session_state.pg += 1
+            st.rerun()

@@ -8,6 +8,7 @@ import numpy as np
 import feedparser
 import time
 from datetime import datetime, timedelta
+import concurrent.futures
 
 # --- 1. PAGE CONFIG & STATE ---
 st.set_page_config(page_title="Macro Dash Master", layout="wide")

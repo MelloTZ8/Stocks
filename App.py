@@ -75,6 +75,24 @@ active_feeds = {
 
 # --- 4. DATA LOADING (Cloud-Hardened) ---
 @st.cache_data(ttl=3600)
+def load_market_data(ticker_tuple):
+    # yfinance needs a list, so we temporarily convert the tuple back to a list inside
+    ticker_list = list(ticker_tuple)
+    
+    for attempt in range(3):
+        try:
+            df = yf.download(ticker_list, period="3y", progress=False)
+            if isinstance(df.columns, pd.MultiIndex): 
+                df = df['Close']
+            if not df.empty:
+                if '^TNX' in df.columns: 
+                    df['^TNX'] = df['^TNX'] / 10
+                return df.dropna()
+        except Exception as e:
+            time.sleep(2)
+    return pd.DataFrame()
+
+@st.cache_data(ttl=3600)
 def load_bond_data():
     tickers = ['DGS3MO', 'DGS2', 'DGS5', 'DGS10', 'DGS30']
     df = pd.DataFrame()
@@ -82,58 +100,22 @@ def load_bond_data():
     # The "Fake ID": Tells FRED we are a normal web browser, not a cloud bot
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
     
-    # Fetch directly from FRED's raw CSV endpoint
     for ticker in tickers:
         url = f'https://fred.stlouisfed.org/graph/fredgraph.csv?id={ticker}'
-        
-        # We pass the headers into storage_options to bypass the bot-blocker
-        temp_df = pd.read_csv(
-            url, 
-            index_col='DATE', 
-            parse_dates=True, 
-            na_values='.',
-            storage_options=headers
-        )
+        temp_df = pd.read_csv(url, index_col='DATE', parse_dates=True, na_values='.', storage_options=headers)
         df[ticker] = temp_df[ticker]
         
-    # Filter for 1994 onwards to match our lookback
     df = df[df.index >= '1994-01-01']
-    
     df.columns = ['3-Month', '2-Year', '5-Year', '10-Year', '30-Year']
     df.dropna(inplace=True)
     
-    # Calculate Spreads
     df['10Y_3M_Spread'] = df['10-Year'] - df['3-Month']
     df['10Y_2Y_Spread'] = df['10-Year'] - df['2-Year']
     df['30Y_5Y_Spread'] = df['30-Year'] - df['5-Year']
     return df
 
-@st.cache_data(ttl=3600)
-def load_bond_data():
-    tickers = ['DGS3MO', 'DGS2', 'DGS5', 'DGS10', 'DGS30']
-    df = pd.DataFrame()
-    
-    # Fetch directly from FRED's raw CSV endpoint (No datareader required!)
-    for ticker in tickers:
-        url = f'https://fred.stlouisfed.org/graph/fredgraph.csv?id={ticker}'
-        # FRED uses '.' for missing data, so we tell pandas to treat it as NaN
-        temp_df = pd.read_csv(url, index_col='DATE', parse_dates=True, na_values='.')
-        df[ticker] = temp_df[ticker]
-        
-    # Filter for 1994 onwards to match our lookback
-    df = df[df.index >= '1994-01-01']
-    
-    df.columns = ['3-Month', '2-Year', '5-Year', '10-Year', '30-Year']
-    df.dropna(inplace=True)
-    
-    # Calculate Spreads
-    df['10Y_3M_Spread'] = df['10-Year'] - df['3-Month']
-    df['10Y_2Y_Spread'] = df['10-Year'] - df['2-Year']
-    df['30Y_5Y_Spread'] = df['30-Year'] - df['5-Year']
-    return df
-
-# Initialize Data
-all_tickers = list(set([t for c in categories.values() for t in c.keys()] + ['GLD']))
+# Initialize Data (Using a sorted tuple to prevent Streamlit cache crashes)
+all_tickers = tuple(sorted(list(set([t for c in categories.values() for t in c.keys()] + ['GLD']))))
 raw_data = load_market_data(all_tickers)
 rename_map = {t: l for cat in categories.values() for t, l in cat.items()}
 rename_map['GLD'] = '🟡 GLD'

@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timedelta
 
 # --- 1. PAGE CONFIG & STATE ---
-st.set_page_config(page_title="Macro Snapshot v32.3", layout="wide")
+st.set_page_config(page_title="Dash 1.0", layout="wide")
 
 # Cloud-Safe Session State Init
 if "pg" not in st.session_state: 
@@ -32,6 +32,11 @@ color_map = {
     '📟 NVDA': '#FFD700', '📟 AMD': '#DAA520', '📟 AVGO': '#BDB76B', '🔥 XLE': '#FF0000', '🔥 XOM': '#DC143C', 
     '🔥 DBC': '#8B0000', '🟡 GLD': '#FFD700', '🏦 KBE': '#800080', '🏦 JPM': '#9370DB', '🏦 BRK': '#4B0082',
     '🛡️ SCHD': '#008000', '🛡️ WMT': '#32CD32', '🛡️ PG': '#228B22',
+}
+
+category_emojis = {
+    "Indicators": "📉", "Digital Assets": "₿", "Tech": "💻", 
+    "Semis": "📟", "Energy/Inf": "🔥", "Financials": "🏦", "Defensive": "🛡️"
 }
 
 # --- 3. SIDEBAR (Restored Full Legend) ---
@@ -139,17 +144,17 @@ with tab1:
         st.plotly_chart(fig_line, use_container_width=True)
 
     # 2. Heatmap
-    st.subheader("2. Market DNA Heatmap (Indicators Centered)")
+    st.subheader("2. Market DNA Heatmap 🔥")
     fig_corr = px.imshow(corr_matrix.mask(np.triu(np.ones_like(corr_matrix, dtype=bool))), text_auto=".2f", aspect="auto", color_continuous_scale='RdBu_r', range_color=[-1, 1], template="plotly_dark")
     st.plotly_chart(fig_corr, use_container_width=True)
 
     # 3. Command Center
     st.divider()
-    st.subheader("3. Macro Command Center: Distilled Dials")
+    st.subheader("3. Macro Command Center: Gauges")
     anchors = [
-        ('TLT', "📉 TLT (Bonds)"), ('^TNX', "🏛️ 10Y Yield"), ('DX-Y.NYB', "💵 DXY (Dollar)"), 
-        ('MSTR', "₿ Crypto (MSTR)"), ('MSFT', "💻 Tech (MSFT)"), ('NVDA', "📟 Semis (NVDA)"), 
-        ('XLE', "🔥 Energy (XLE)"), ('JPM', "🏦 Banks (JPM)"), ('WMT', "🛡️ Defensive (WMT)"), ('^VIX', "💀 VIX (Fear)")
+        ('TLT', "📉 Bonds"), ('^TNX', "🏛️ 10Y Yield"), ('DX-Y.NYB', "💵 US Dollar"), 
+        ('MSTR', "₿ Crypto"), ('MSFT', "💻 Tech"), ('NVDA', "📟 Semis"), 
+        ('XLE', "🔥 Energy"), ('JPM', "🏦 Banks"), ('WMT', "🛡️ Defensive"), ('^VIX', "💀 Volatility")
     ]
 
     for ticker, row_title in anchors:
@@ -163,10 +168,10 @@ with tab1:
             "Trend": [get_perf_and_trend(anchor_s, d)[1] for d in [2, 21, 63, 126]]
         }
         
-        # CHANGED: Swapped st.table for st.dataframe with hide_index=True
         t_col.dataframe(pd.DataFrame(p_data), hide_index=True)
 
-        active_cats = [c for c in categories.keys() if ticker not in categories[c]]
+        # CHANGED: Filtered out 'A: Indicators' from the gauge loop
+        active_cats = [c for c in categories.keys() if ticker not in categories[c] and c != "A: Indicators"]
         gauge_cols = g_col.columns(len(active_cats) + 1)
         anchor_lbl = rename_map[ticker]
         section_audit = []
@@ -176,7 +181,8 @@ with tab1:
             indiv_vals = [corr_matrix.loc[anchor_lbl, lbl] for lbl in cat_ticks]
             avg_val = np.mean(indiv_vals)
             short_name = cat_name.split(': ')[1]
-            draw_gauge(short_name, avg_val, gauge_cols[i], f"g_{ticker}_{cat_name}_{day_offset}")
+            emoji = category_emojis.get(short_name, "")
+            draw_gauge(f"{emoji} {short_name}", avg_val, gauge_cols[i], f"g_{ticker}_{cat_name}_{day_offset}")
             section_audit.append({"Sector": short_name, "Values": ", ".join([f"{v:.2f}" for v in indiv_vals]), "Avg": f"{avg_val:.2f}"})
 
         draw_gauge("🟡 Gold", corr_matrix.loc[anchor_lbl, '🟡 GLD'], gauge_cols[-1], f"gold_{ticker}_{day_offset}")

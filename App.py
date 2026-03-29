@@ -8,7 +8,6 @@ import numpy as np
 import feedparser
 import time
 from datetime import datetime, timedelta
-import pandas_datareader.data as web
 
 # --- 1. PAGE CONFIG & STATE ---
 st.set_page_config(page_title="Macro Dash Master", layout="wide")
@@ -89,10 +88,19 @@ def load_market_data(ticker_list):
 
 @st.cache_data(ttl=3600)
 def load_bond_data():
-    end = datetime.today().date()
-    start = datetime(1994, 1, 1).date()
     tickers = ['DGS3MO', 'DGS2', 'DGS5', 'DGS10', 'DGS30']
-    df = web.DataReader(tickers, 'fred', start, end)
+    df = pd.DataFrame()
+    
+    # Fetch directly from FRED's raw CSV endpoint (No datareader required!)
+    for ticker in tickers:
+        url = f'https://fred.stlouisfed.org/graph/fredgraph.csv?id={ticker}'
+        # FRED uses '.' for missing data, so we tell pandas to treat it as NaN
+        temp_df = pd.read_csv(url, index_col='DATE', parse_dates=True, na_values='.')
+        df[ticker] = temp_df[ticker]
+        
+    # Filter for 1994 onwards to match our lookback
+    df = df[df.index >= '1994-01-01']
+    
     df.columns = ['3-Month', '2-Year', '5-Year', '10-Year', '30-Year']
     df.dropna(inplace=True)
     

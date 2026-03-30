@@ -8,10 +8,7 @@ import numpy as np
 import feedparser
 import time
 from datetime import datetime, timedelta
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-from io import StringIO
+import pandas_datareader.data as web
 
 # --- 1. PAGE CONFIG & STATE ---
 st.set_page_config(page_title="Macro Dash Master", layout="wide")
@@ -79,77 +76,43 @@ active_feeds = {
 
 # --- 4. DATA LOADING (Cloud-Hardened) ---
 @st.cache_data(ttl=3600)
-def load_market_data(ticker_tuple):
-    ticker_list = list(ticker_tuple)
-    try:
-        df = yf.download(ticker_list, period="3y", progress=False, threads=False, timeout=15)
-        
-        if df.empty:
-            return pd.DataFrame(), "yfinance returned an empty DataFrame (Yahoo API rejected the request)."
-            
-        if isinstance(df.columns, pd.MultiIndex): 
-            df = df['Close']
-            
-        if '^TNX' in df.columns: 
-            df['^TNX'] = df['^TNX'] / 10
-            
-        return df.dropna(), "OK"
-    except Exception as e:
-        return pd.DataFrame(), f"System Error: {str(e)}"
+def load_market_data(ticker_list):
+    for attempt in range(3):
+        try:
+            df = yf.download(ticker_list + ['GLD'], period="3y", progress=False)
+            if isinstance(df.columns, pd.MultiIndex): df = df['Close']
+            if not df.empty:
+                if '^TNX' in df.columns: df['^TNX'] = df['^TNX'] / 10
+                return df.dropna()
+        except: time.sleep(2)
+    return pd.DataFrame()
 
 @st.cache_data(ttl=3600)
 def load_bond_data():
+    end = datetime.today().date()
+    start = datetime(1994, 1, 1).date()
     tickers = ['DGS3MO', 'DGS2', 'DGS5', 'DGS10', 'DGS30']
-    df = pd.DataFrame()
-    error_msg = "OK"
+    df = web.DataReader(tickers, 'fred', start, end)
+    df.columns = ['3-Month', '2-Year', '5-Year', '10-Year', '30-Year']
+    df.dropna(inplace=True)
     
-    # 1. Setup a resilient session for FRED
-    session = requests.Session()
-    session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'})
-    
-    # 2. The Retry Engine: If FRED stalls, automatically retry 3 times with a backoff
-    retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
-    session.mount('https://', HTTPAdapter(max_retries=retries))
-    
-    for ticker in tickers:
-        url = f'https://fred.stlouisfed.org/graph/fredgraph.csv?id={ticker}'
-        try:
-            # 3. Extended the timeout to 30 seconds
-            response = session.get(url, timeout=30)
-            response.raise_for_status() 
-            temp_df = pd.read_csv(StringIO(response.text), index_col='DATE', parse_dates=True, na_values='.')
-            df[ticker] = temp_df[ticker]
-        except Exception as e:
-            error_msg = f"Failed on {ticker}: {str(e)}"
-            continue 
-            
-    if not df.empty and len(df.columns) == 5:
-        df = df[df.index >= '1994-01-01']
-        df.columns = ['3-Month', '2-Year', '5-Year', '10-Year', '30-Year']
-        df.dropna(inplace=True)
-        df['10Y_3M_Spread'] = df['10-Year'] - df['3-Month']
-        df['10Y_2Y_Spread'] = df['10-Year'] - df['2-Year']
-        df['30Y_5Y_Spread'] = df['30-Year'] - df['5-Year']
-        
-    return df, error_msg
+    # Calculate Spreads
+    df['10Y_3M_Spread'] = df['10-Year'] - df['3-Month']
+    df['10Y_2Y_Spread'] = df['10-Year'] - df['2-Year']
+    df['30Y_5Y_Spread'] = df['30-Year'] - df['5-Year']
+    return df
 
-# Initialize Data 
-all_tickers = tuple(sorted(list(set([t for c in categories.values() for t in c.keys()] + ['GLD']))))
+# Initialize Data
+all_tickers = list(set([t for c in categories.values() for t in c.keys()] + ['GLD']))
+raw_data = load_market_data(all_tickers)
 rename_map = {t: l for cat in categories.values() for t, l in cat.items()}
 rename_map['GLD'] = '🟡 GLD'
+bond_df = load_bond_data()
 
-with st.spinner("📡 Booting Macro Engines & Fetching Data..."):
-    raw_data, yf_status = load_market_data(all_tickers)
-    bond_df, fred_status = load_bond_data()
-
-# Explicit Error Output
 if raw_data.empty or bond_df.empty:
-    st.error("🚨 CRITICAL DATA FAILURE: The Cloud Server could not fetch the data.")
-    st.warning(f"**Yahoo Finance Error Log:** {yf_status}")
-    st.warning(f"**FRED Error Log:** {fred_status}")
-    st.info("Please copy and paste those exact error logs back to me so we can fix the root cause.")
+    st.error("📡 API rate limit hit or unavailable. Please wait a few moments and refresh.")
     st.stop()
-    
+
 # --- 5. UTILITIES ---
 def get_perf_and_trend(series, days):
     try:

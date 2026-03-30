@@ -77,12 +77,11 @@ active_feeds = {
 # --- 4. DATA LOADING (Cloud-Hardened) ---
 @st.cache_data(ttl=3600)
 def load_market_data(ticker_tuple):
-    # yfinance needs a list, so we temporarily convert the tuple back to a list inside
     ticker_list = list(ticker_tuple)
-    
     for attempt in range(3):
         try:
-            df = yf.download(ticker_list, period="3y", progress=False)
+            # FIX 1: threads=False stops yfinance from deadlocking the cloud CPU
+            df = yf.download(ticker_list, period="3y", progress=False, threads=False)
             if isinstance(df.columns, pd.MultiIndex): 
                 df = df['Close']
             if not df.empty:
@@ -97,47 +96,43 @@ def load_market_data(ticker_tuple):
 def load_bond_data():
     tickers = ['DGS3MO', 'DGS2', 'DGS5', 'DGS10', 'DGS30']
     df = pd.DataFrame()
-    
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
     
-    # Helper function for the threads to run
     def fetch_fred_data(ticker):
         url = f'https://fred.stlouisfed.org/graph/fredgraph.csv?id={ticker}'
         temp_df = pd.read_csv(url, index_col='DATE', parse_dates=True, na_values='.', storage_options=headers)
         return ticker, temp_df[ticker]
 
-    # Spin up 5 simultaneous threads to fetch the data all at once
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        results = executor.map(fetch_fred_data, tickers)
+        # FIX 2: Force the threads to resolve into a list BEFORE exiting the block
+        results = list(executor.map(fetch_fred_data, tickers))
         
-    # Stitch the results back together
     for ticker, series in results:
         df[ticker] = series
         
-    # Filter for 1994 onwards
     df = df[df.index >= '1994-01-01']
-    
     df.columns = ['3-Month', '2-Year', '5-Year', '10-Year', '30-Year']
     df.dropna(inplace=True)
     
-    # Calculate Spreads
     df['10Y_3M_Spread'] = df['10-Year'] - df['3-Month']
     df['10Y_2Y_Spread'] = df['10-Year'] - df['2-Year']
     df['30Y_5Y_Spread'] = df['30-Year'] - df['5-Year']
-    
     return df
 
-# Initialize Data (Using a sorted tuple to prevent Streamlit cache crashes)
+# Initialize Data 
 all_tickers = tuple(sorted(list(set([t for c in categories.values() for t in c.keys()] + ['GLD']))))
-raw_data = load_market_data(all_tickers)
 rename_map = {t: l for cat in categories.values() for t, l in cat.items()}
 rename_map['GLD'] = '🟡 GLD'
-bond_df = load_bond_data()
+
+# FIX 3: The Keep-Alive Spinner. 
+# This renders to the screen immediately, preventing the 503 Timeout error.
+with st.spinner("📡 Booting Macro Engines & Fetching 30 Years of Data (This takes ~15 seconds on first boot)..."):
+    raw_data = load_market_data(all_tickers)
+    bond_df = load_bond_data()
 
 if raw_data.empty or bond_df.empty:
     st.error("📡 API rate limit hit or unavailable. Please wait a few moments and refresh.")
     st.stop()
-
 # --- 5. UTILITIES ---
 def get_perf_and_trend(series, days):
     try:

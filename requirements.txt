@@ -6,3 +6,4 @@ numpy
 feedparser
 requests
 urllib3
+pandas-datareader

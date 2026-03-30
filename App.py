@@ -75,25 +75,26 @@ active_feeds = {
 }
 
 # --- 4. DATA LOADING (Cloud-Hardened) ---
+import requests
+from io import StringIO
+
 @st.cache_data(ttl=3600)
 def load_market_data(ticker_tuple):
     ticker_list = list(ticker_tuple)
-    
-    # The "Fake ID" for Yahoo Finance to bypass silent IP blocking
     session = requests.Session()
     session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'})
     
-    for attempt in range(3):
+    for attempt in range(2):
         try:
-            # FIX 1: threads=False stops yfinance from deadlocking the cloud CPU
-            df = yf.download(ticker_list, period="3y", progress=False, threads=False, session=session)
+            # HARD TIMEOUT: If Yahoo ignores us for 10 seconds, cut the cord.
+            df = yf.download(ticker_list, period="3y", progress=False, threads=False, session=session, timeout=10)
             if isinstance(df.columns, pd.MultiIndex): 
                 df = df['Close']
             if not df.empty:
                 if '^TNX' in df.columns: 
                     df['^TNX'] = df['^TNX'] / 10
                 return df.dropna()
-        except Exception as e:
+        except Exception:
             time.sleep(2)
     return pd.DataFrame()
 
@@ -103,18 +104,21 @@ def load_bond_data():
     df = pd.DataFrame()
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}
     
-    # FIX 2: Ripped out threading to prevent 1-core cloud deadlocks. 
-    # This sequential loop is 100% stable.
     for ticker in tickers:
         url = f'https://fred.stlouisfed.org/graph/fredgraph.csv?id={ticker}'
         try:
-            temp_df = pd.read_csv(url, index_col='DATE', parse_dates=True, na_values='.', storage_options=headers)
+            # HARD TIMEOUT: Stop pandas from waiting infinitely on a dead connection
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status() # Ensure we actually got a 200 OK
+            
+            # Read the text stream directly into pandas
+            temp_df = pd.read_csv(StringIO(response.text), index_col='DATE', parse_dates=True, na_values='.')
             df[ticker] = temp_df[ticker]
-        except:
-            continue
+        except Exception as e:
+            continue # If one fails, skip it so the app doesn't die
             
     df = df[df.index >= '1994-01-01']
-    if not df.empty:
+    if not df.empty and len(df.columns) == 5:
         df.columns = ['3-Month', '2-Year', '5-Year', '10-Year', '30-Year']
         df.dropna(inplace=True)
         df['10Y_3M_Spread'] = df['10-Year'] - df['3-Month']
@@ -127,15 +131,20 @@ all_tickers = tuple(sorted(list(set([t for c in categories.values() for t in c.k
 rename_map = {t: l for cat in categories.values() for t, l in cat.items()}
 rename_map['GLD'] = '🟡 GLD'
 
-# FIX 3: The Keep-Alive Spinner. 
-with st.spinner("📡 Bypassing Cloud Firewalls & Fetching Data (Takes ~15-45s on first boot)..."):
+with st.spinner("📡 Enforcing Timeouts & Fetching Data..."):
     raw_data = load_market_data(all_tickers)
     bond_df = load_bond_data()
 
-if raw_data.empty or bond_df.empty:
-    st.error("📡 API rate limit hit or unavailable. Please wait a few moments and refresh.")
+# Explicit Error Handling so you know exactly who is blocking you
+if raw_data.empty and bond_df.empty:
+    st.error("🚨 TOTAL BLOCK: Both Yahoo Finance and FRED are actively rejecting this Streamlit Cloud IP. Delete the app and spin up a new one to get a fresh IP address.")
     st.stop()
-
+elif raw_data.empty:
+    st.error("🚨 YAHOO BLOCK: Yahoo Finance timed out. (FRED bond data loaded successfully).")
+    st.stop()
+elif bond_df.empty:
+    st.error("🚨 FRED BLOCK: Federal Reserve database timed out. (Yahoo data loaded successfully).")
+    st.stop()
 # --- 5. UTILITIES ---
 def get_perf_and_trend(series, days):
     try:

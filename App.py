@@ -86,7 +86,6 @@ def load_market_data(ticker_tuple):
     
     for attempt in range(2):
         try:
-            # HARD TIMEOUT: If Yahoo ignores us for 10 seconds, cut the cord.
             df = yf.download(ticker_list, period="3y", progress=False, threads=False, session=session, timeout=10)
             if isinstance(df.columns, pd.MultiIndex): 
                 df = df['Close']
@@ -107,23 +106,22 @@ def load_bond_data():
     for ticker in tickers:
         url = f'https://fred.stlouisfed.org/graph/fredgraph.csv?id={ticker}'
         try:
-            # HARD TIMEOUT: Stop pandas from waiting infinitely on a dead connection
             response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status() # Ensure we actually got a 200 OK
-            
-            # Read the text stream directly into pandas
+            response.raise_for_status() 
             temp_df = pd.read_csv(StringIO(response.text), index_col='DATE', parse_dates=True, na_values='.')
             df[ticker] = temp_df[ticker]
-        except Exception as e:
-            continue # If one fails, skip it so the app doesn't die
+        except Exception:
+            continue
             
-    df = df[df.index >= '1994-01-01']
+    # FIX: Only apply the date filter and math IF FRED actually gave us the data
     if not df.empty and len(df.columns) == 5:
+        df = df[df.index >= '1994-01-01']
         df.columns = ['3-Month', '2-Year', '5-Year', '10-Year', '30-Year']
         df.dropna(inplace=True)
         df['10Y_3M_Spread'] = df['10-Year'] - df['3-Month']
         df['10Y_2Y_Spread'] = df['10-Year'] - df['2-Year']
         df['30Y_5Y_Spread'] = df['30-Year'] - df['5-Year']
+        
     return df
 
 # Initialize Data 
@@ -135,16 +133,17 @@ with st.spinner("📡 Enforcing Timeouts & Fetching Data..."):
     raw_data = load_market_data(all_tickers)
     bond_df = load_bond_data()
 
-# Explicit Error Handling so you know exactly who is blocking you
+# Explicit Error Handling
 if raw_data.empty and bond_df.empty:
     st.error("🚨 TOTAL BLOCK: Both Yahoo Finance and FRED are actively rejecting this Streamlit Cloud IP. Delete the app and spin up a new one to get a fresh IP address.")
     st.stop()
 elif raw_data.empty:
-    st.error("🚨 YAHOO BLOCK: Yahoo Finance timed out. (FRED bond data loaded successfully).")
+    st.error("🚨 YAHOO BLOCK: Yahoo Finance timed out or blocked the request. (FRED bond data loaded successfully).")
     st.stop()
 elif bond_df.empty:
-    st.error("🚨 FRED BLOCK: Federal Reserve database timed out. (Yahoo data loaded successfully).")
+    st.error("🚨 FRED BLOCK: Federal Reserve database timed out or blocked the request. (Yahoo data loaded successfully).")
     st.stop()
+    
 # --- 5. UTILITIES ---
 def get_perf_and_trend(series, days):
     try:

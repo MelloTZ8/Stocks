@@ -9,6 +9,9 @@ import feedparser
 import time
 from datetime import datetime, timedelta
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from io import StringIO
 
 # --- 1. PAGE CONFIG & STATE ---
 st.set_page_config(page_title="Macro Dash Master", layout="wide")
@@ -75,14 +78,10 @@ active_feeds = {
 }
 
 # --- 4. DATA LOADING (Cloud-Hardened) ---
-import requests
-from io import StringIO
-
 @st.cache_data(ttl=3600)
 def load_market_data(ticker_tuple):
     ticker_list = list(ticker_tuple)
     try:
-        # Removed the custom session so yfinance can use its own built-in Cloudflare bypass
         df = yf.download(ticker_list, period="3y", progress=False, threads=False, timeout=15)
         
         if df.empty:
@@ -102,19 +101,27 @@ def load_market_data(ticker_tuple):
 def load_bond_data():
     tickers = ['DGS3MO', 'DGS2', 'DGS5', 'DGS10', 'DGS30']
     df = pd.DataFrame()
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
     error_msg = "OK"
+    
+    # 1. Setup a resilient session for FRED
+    session = requests.Session()
+    session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'})
+    
+    # 2. The Retry Engine: If FRED stalls, automatically retry 3 times with a backoff
+    retries = Retry(total=3, backoff_factor=1, status_forcelist=[429, 500, 502, 503, 504])
+    session.mount('https://', HTTPAdapter(max_retries=retries))
     
     for ticker in tickers:
         url = f'https://fred.stlouisfed.org/graph/fredgraph.csv?id={ticker}'
         try:
-            response = requests.get(url, headers=headers, timeout=15)
-            response.raise_for_status() # This will catch 403 Forbidden errors
+            # 3. Extended the timeout to 30 seconds
+            response = session.get(url, timeout=30)
+            response.raise_for_status() 
             temp_df = pd.read_csv(StringIO(response.text), index_col='DATE', parse_dates=True, na_values='.')
             df[ticker] = temp_df[ticker]
         except Exception as e:
             error_msg = f"Failed on {ticker}: {str(e)}"
-            continue
+            continue 
             
     if not df.empty and len(df.columns) == 5:
         df = df[df.index >= '1994-01-01']

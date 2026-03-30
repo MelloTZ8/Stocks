@@ -81,39 +81,41 @@ from io import StringIO
 @st.cache_data(ttl=3600)
 def load_market_data(ticker_tuple):
     ticker_list = list(ticker_tuple)
-    session = requests.Session()
-    session.headers.update({'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'})
-    
-    for attempt in range(2):
-        try:
-            df = yf.download(ticker_list, period="3y", progress=False, threads=False, session=session, timeout=10)
-            if isinstance(df.columns, pd.MultiIndex): 
-                df = df['Close']
-            if not df.empty:
-                if '^TNX' in df.columns: 
-                    df['^TNX'] = df['^TNX'] / 10
-                return df.dropna()
-        except Exception:
-            time.sleep(2)
-    return pd.DataFrame()
+    try:
+        # Removed the custom session so yfinance can use its own built-in Cloudflare bypass
+        df = yf.download(ticker_list, period="3y", progress=False, threads=False, timeout=15)
+        
+        if df.empty:
+            return pd.DataFrame(), "yfinance returned an empty DataFrame (Yahoo API rejected the request)."
+            
+        if isinstance(df.columns, pd.MultiIndex): 
+            df = df['Close']
+            
+        if '^TNX' in df.columns: 
+            df['^TNX'] = df['^TNX'] / 10
+            
+        return df.dropna(), "OK"
+    except Exception as e:
+        return pd.DataFrame(), f"System Error: {str(e)}"
 
 @st.cache_data(ttl=3600)
 def load_bond_data():
     tickers = ['DGS3MO', 'DGS2', 'DGS5', 'DGS10', 'DGS30']
     df = pd.DataFrame()
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+    error_msg = "OK"
     
     for ticker in tickers:
         url = f'https://fred.stlouisfed.org/graph/fredgraph.csv?id={ticker}'
         try:
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status() 
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status() # This will catch 403 Forbidden errors
             temp_df = pd.read_csv(StringIO(response.text), index_col='DATE', parse_dates=True, na_values='.')
             df[ticker] = temp_df[ticker]
-        except Exception:
+        except Exception as e:
+            error_msg = f"Failed on {ticker}: {str(e)}"
             continue
             
-    # FIX: Only apply the date filter and math IF FRED actually gave us the data
     if not df.empty and len(df.columns) == 5:
         df = df[df.index >= '1994-01-01']
         df.columns = ['3-Month', '2-Year', '5-Year', '10-Year', '30-Year']
@@ -122,26 +124,23 @@ def load_bond_data():
         df['10Y_2Y_Spread'] = df['10-Year'] - df['2-Year']
         df['30Y_5Y_Spread'] = df['30-Year'] - df['5-Year']
         
-    return df
+    return df, error_msg
 
 # Initialize Data 
 all_tickers = tuple(sorted(list(set([t for c in categories.values() for t in c.keys()] + ['GLD']))))
 rename_map = {t: l for cat in categories.values() for t, l in cat.items()}
 rename_map['GLD'] = '🟡 GLD'
 
-with st.spinner("📡 Enforcing Timeouts & Fetching Data..."):
-    raw_data = load_market_data(all_tickers)
-    bond_df = load_bond_data()
+with st.spinner("📡 Booting Macro Engines & Fetching Data..."):
+    raw_data, yf_status = load_market_data(all_tickers)
+    bond_df, fred_status = load_bond_data()
 
-# Explicit Error Handling
-if raw_data.empty and bond_df.empty:
-    st.error("🚨 TOTAL BLOCK: Both Yahoo Finance and FRED are actively rejecting this Streamlit Cloud IP. Delete the app and spin up a new one to get a fresh IP address.")
-    st.stop()
-elif raw_data.empty:
-    st.error("🚨 YAHOO BLOCK: Yahoo Finance timed out or blocked the request. (FRED bond data loaded successfully).")
-    st.stop()
-elif bond_df.empty:
-    st.error("🚨 FRED BLOCK: Federal Reserve database timed out or blocked the request. (Yahoo data loaded successfully).")
+# Explicit Error Output
+if raw_data.empty or bond_df.empty:
+    st.error("🚨 CRITICAL DATA FAILURE: The Cloud Server could not fetch the data.")
+    st.warning(f"**Yahoo Finance Error Log:** {yf_status}")
+    st.warning(f"**FRED Error Log:** {fred_status}")
+    st.info("Please copy and paste those exact error logs back to me so we can fix the root cause.")
     st.stop()
     
 # --- 5. UTILITIES ---
